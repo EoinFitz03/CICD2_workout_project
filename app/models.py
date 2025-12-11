@@ -1,23 +1,30 @@
 # app/models.py
 
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import String, Integer, Enum as SAEnum
+from datetime import date
 
-from .schemas import GenderEnum
+from sqlalchemy import String, Integer, Date, Text
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
+    """Base class for all ORM models."""
     pass
 
 
-class UserDB(Base):
-    __tablename__ = "users"
+class WorkoutDB(Base):
+    __tablename__ = "workouts"
 
-    user_id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    name: Mapped[str] = mapped_column(String(50), nullable=False)
-    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    age: Mapped[int] = mapped_column(Integer, nullable=False)
-    gender: Mapped[GenderEnum] = mapped_column(
-        SAEnum(GenderEnum, name="gender_enum"),
-        nullable=False,
-    )
+    workout_id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+
+    workout_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    calories: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    workout_date: Mapped[date] = mapped_column(Date, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    def __repr__(self) -> str:
+        return (
+            f"<WorkoutDB(workout_id={self.workout_id}, user_id={self.user_id}, "
+            f"workout_type={self.workout_type!r}, duration_minutes={self.duration_minutes})>"
+        )

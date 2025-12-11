@@ -1,165 +1,139 @@
 # app/main.py
 
-from contextlib import asynccontextmanager
+from typing import List
 
-from fastapi import FastAPI, Depends, HTTPException, status, Response
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .database import engine, get_db
-from .models import Base, UserDB
-from .schemas import UserInput, UserOutput, UserUpdate
+from app.database import engine, get_db
+from app.models import Base, WorkoutDB
+from app.schemas import WorkoutInput, WorkoutOutput, WorkoutUpdate
 
+# Create tables using the Base from app.models
+Base.metadata.create_all(bind=engine)
 
-# ---------- Lifespan / app setup ----------
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Create the users table on startup
-    Base.metadata.create_all(bind=engine)
-    yield
-
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    title="Workout Service",
+    version="0.1.0",
+)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ---------- Helper for committing ----------
-
-def commit_or_rollback(db: Session, error_msg: str):
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=error_msg,
-        )
+@app.get("/", tags=["health"])
+def health_check():
+    return {"status": "ok", "service": "workout"}
 
 
-# ---------- Health & root ----------
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.get("/")
-def root():
-    return {"message": "Welcome to the Fitness Tracker Users Service"}
-
-
-# ---------- Users CRUD ----------
-
-# CREATE user
 @app.post(
-    "/api/users",
-    response_model=UserOutput,
+    "/workouts",
+    response_model=WorkoutOutput,
     status_code=status.HTTP_201_CREATED,
+    tags=["workouts"],
 )
-def add_user(payload: UserInput, db: Session = Depends(get_db)):
-    user = UserDB(**payload.model_dump())
-    db.add(user)
-
-    commit_or_rollback(db, "User already exists")
-    db.refresh(user)
-    return user
-
-
-# LIST users
-@app.get("/api/users", response_model=list[UserOutput])
-def list_users(
-    limit: int = 10,
-    offset: int = 0,
+def create_workout(
+    payload: WorkoutInput,
     db: Session = Depends(get_db),
 ):
-    stmt = (
-        select(UserDB)
-        .order_by(UserDB.user_id)
-        .limit(limit)
-        .offset(offset)
+    workout = WorkoutDB(
+        user_id=payload.user_id,
+        workout_type=payload.workout_type,
+        duration_minutes=payload.duration_minutes,
+        calories=payload.calories,
+        workout_date=payload.workout_date,
+        notes=payload.notes,
     )
-    result = db.execute(stmt)
-    return result.scalars().all()
-
-
-# GET single user by user_id
-@app.get("/api/users/{user_id}", response_model=UserOutput)
-def get_user(user_id: int, db: Session = Depends(get_db)):
-    user = db.get(UserDB, user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-    return user
-
-
-# FULL REPLACE user (PUT)
-@app.put("/api/users/{user_id}", response_model=UserOutput)
-def replace_user(
-    user_id: int,
-    payload: UserInput,
-    db: Session = Depends(get_db),
-):
-    user = db.get(UserDB, user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-
-    user.name = payload.name
-    user.email = payload.email
-    user.age = payload.age
-    user.gender = payload.gender
-
-    commit_or_rollback(db, "User update failed")
-    db.refresh(user)
-    return user
-
-
-# PARTIAL UPDATE user (PATCH)
-@app.patch("/api/users/{user_id}", response_model=UserOutput)
-def update_user(
-    user_id: int,
-    payload: UserUpdate,
-    db: Session = Depends(get_db),
-):
-    user = db.get(UserDB, user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-
-    data = payload.model_dump(exclude_unset=True)
-    for field, value in data.items():
-        setattr(user, field, value)
-
-    commit_or_rollback(db, "User update failed")
-    db.refresh(user)
-    return user
-
-
-# DELETE user
-@app.delete("/api/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_user(user_id: int, db: Session = Depends(get_db)) -> Response:
-    user = db.get(UserDB, user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-
-    db.delete(user)
+    db.add(workout)
     db.commit()
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    db.refresh(workout)
+    return workout
+
+
+@app.get(
+    "/workouts",
+    response_model=List[WorkoutOutput],
+    tags=["workouts"],
+)
+def list_workouts(
+    user_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(WorkoutDB)
+    if user_id is not None:
+        query = query.filter(WorkoutDB.user_id == user_id)
+    return query.all()
+
+
+@app.get(
+    "/workouts/{workout_id}",
+    response_model=WorkoutOutput,
+    tags=["workouts"],
+)
+def get_workout(
+    workout_id: int,
+    db: Session = Depends(get_db),
+):
+    workout = (
+        db.query(WorkoutDB)
+        .filter(WorkoutDB.workout_id == workout_id)
+        .first()
+    )
+    if not workout:
+        raise HTTPException(status_code=404, detail="Workout not found")
+    return workout
+
+
+@app.put(
+    "/workouts/{workout_id}",
+    response_model=WorkoutOutput,
+    tags=["workouts"],
+)
+def update_workout(
+    workout_id: int,
+    payload: WorkoutUpdate,
+    db: Session = Depends(get_db),
+):
+    workout = (
+        db.query(WorkoutDB)
+        .filter(WorkoutDB.workout_id == workout_id)
+        .first()
+    )
+    if not workout:
+        raise HTTPException(status_code=404, detail="Workout not found")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(workout, key, value)
+
+    db.commit()
+    db.refresh(workout)
+    return workout
+
+
+@app.delete(
+    "/workouts/{workout_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["workouts"],
+)
+def delete_workout(
+    workout_id: int,
+    db: Session = Depends(get_db),
+):
+    workout = (
+        db.query(WorkoutDB)
+        .filter(WorkoutDB.workout_id == workout_id)
+        .first()
+    )
+    if not workout:
+        raise HTTPException(status_code=404, detail="Workout not found")
+
+    db.delete(workout)
+    db.commit()
+    return

@@ -5,9 +5,9 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     ports:
-      - "5433:5432"
+      - "5434:5432"   # <--- workout DB on 5434 so it won't clash with users on 5433
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U \"$${POSTGRES_USER:-app}\" -d \"$${POSTGRES_DB:-appdb}\""]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U \"$${POSTGRES_USER:-app}\" -d \"$${POSTGRES_DB:-workoutdb}\""]
       interval: 5s
       retries: 10
     restart: unless-stopped
@@ -21,7 +21,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "8001:8000"   # <--- workout API on 8001 so users can stay on 8000
     restart: unless-stopped
 
 volumes:

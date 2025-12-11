@@ -1,56 +1,48 @@
 # app/schemas.py
 
 from typing import Annotated, Optional
-from enum import Enum
+from datetime import date
 
 from annotated_types import Ge, Le
-from pydantic import BaseModel, EmailStr, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
-# ---------- Reusable type aliases ----------
+WorkoutTypeStr = Annotated[str, StringConstraints(min_length=2, max_length=100)]
+NotesStr = Annotated[str, StringConstraints(max_length=500)]
+DurationMinutesInt = Annotated[int, Ge(1), Le(1000)]
+CaloriesInt = Annotated[int, Ge(0), Le(100000)]
 
-NameStr   = Annotated[str, StringConstraints(min_length=2, max_length=50)]
-AgeInt    = Annotated[int, Ge(18), Le(150)]
 UserIdInt = int
+WorkoutIdInt = int
 
 
-# ---------- Enums ----------
-
-class GenderEnum(str, Enum):
-    Male   = "Male"
-    Female = "Female"
-    Other  = "Other"
-
-
-# ---------- Users ----------
-
-# Used for creating a new user (request body)
-class UserInput(BaseModel):
-    name: NameStr
-    email: EmailStr
-    age: AgeInt
-    gender: GenderEnum
+class WorkoutInput(BaseModel):
+    user_id: UserIdInt
+    workout_type: WorkoutTypeStr
+    duration_minutes: DurationMinutesInt
+    calories: Optional[CaloriesInt] = None
+    workout_date: date
+    notes: Optional[NotesStr] = None
 
 
-# Used when returning a user from the database (response model)
-class UserOutput(BaseModel):
+class WorkoutOutput(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    workout_id: WorkoutIdInt
     user_id: UserIdInt
-    name: NameStr
-    email: EmailStr
-    age: AgeInt
-    gender: GenderEnum
+    workout_type: WorkoutTypeStr
+    duration_minutes: DurationMinutesInt
+    calories: Optional[CaloriesInt] = None
+    workout_date: date
+    notes: Optional[NotesStr] = None
 
 
-# Used for updating an existing user (PATCH/PUT body)
-# Fields are optional so you can send partial updates if you want
-class UserUpdate(BaseModel):
-    name: Optional[NameStr] = None
-    email: Optional[EmailStr] = None
-    age: Optional[AgeInt] = None 
-    gender: Optional[GenderEnum] = None
+class WorkoutUpdate(BaseModel):
+    workout_type: Optional[WorkoutTypeStr] = None
+    duration_minutes: Optional[DurationMinutesInt] = None
+    calories: Optional[CaloriesInt] = None
+    workout_date: Optional[date] = None
+    notes: Optional[NotesStr] = None
 
 
-# Used when you want to delete a user (request body or path param + body)
-class UserRemove(BaseModel):
-    user_id: UserIdInt
+class WorkoutRemove(BaseModel):
+    workout_id: WorkoutIdInt
