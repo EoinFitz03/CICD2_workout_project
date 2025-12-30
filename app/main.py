@@ -2,7 +2,8 @@
 
 from typing import List
 import os          # NEW: for reading env vars
-import httpx       # NEW: for HTTP calls to other services
+import httpx       # NEW: for HTTP calls to other services 
+import pybreaker   # NEW: circuit breaker
 
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +17,8 @@ from app.schemas import WorkoutInput, WorkoutOutput, WorkoutUpdate
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
-    title="Workout Service",
+    title="Workout Service API",
+    description="CRUD microservice for workouts",
     version="0.1.0",
 )
 
@@ -31,26 +33,81 @@ app.add_middleware(
 # ---------- NEW: Base URLs for other microservices ----------
 # Same pattern as the lab: use env vars so this service knows where others live.
 # In dev: usually localhost with different ports.
-# In Docker: these will be service names, e.g. http://user_service:8000
-USER_SERVICE_BASE_URL = os.getenv("USER_SERVICE_BASE_URL", "http://localhost:8000")
-GOALS_SERVICE_BASE_URL = os.getenv("GOALS_SERVICE_BASE_URL", "http://localhost:8002")
+# In Docker: these will be service names from docker-compose.
+USER_SERVICE_BASE_URL = os.getenv("USER_SERVICE_BASE_URL", "http://localhost:8001")
+USER_SERVICE_TIMEOUT = float(os.getenv("USER_SERVICE_TIMEOUT", "2.0"))
 
+# ---------- NEW: Circuit breaker config ----------
+# If Users is failing, stop calling it for a while to prevent cascading failures.
+USER_CB_FAIL_MAX = int(os.getenv("USER_CB_FAIL_MAX", "3"))
+USER_CB_RESET_TIMEOUT = int(os.getenv("USER_CB_RESET_TIMEOUT", "30"))
 
-@app.get("/", tags=["health"])
-def health_check():
-    return {"status": "ok", "service": "workout"}
-
-
-@app.post(
-    "/workouts",
-    response_model=WorkoutOutput,
-    status_code=status.HTTP_201_CREATED,
-    tags=["workouts"],
+user_service_breaker = pybreaker.CircuitBreaker(
+    fail_max=USER_CB_FAIL_MAX,
+    reset_timeout=USER_CB_RESET_TIMEOUT,
 )
-def create_workout(
-    payload: WorkoutInput,
-    db: Session = Depends(get_db),
-):
+
+# ---------- NEW: helper to check user exists (sync call + error handling) ----------
+def _check_user_exists_via_http(user_id: int) -> None:
+    """
+    Synchronous call to users_service to confirm a user exists.
+    This function raises HTTPException with appropriate codes for:
+      - 404 if user not found
+      - 503 if users service is down/slow
+    """
+    url = f"{USER_SERVICE_BASE_URL}/users/{user_id}"
+
+    try:
+        with httpx.Client(timeout=USER_SERVICE_TIMEOUT) as client:
+            resp = client.get(url)
+    except httpx.RequestError:
+        # Users service unreachable / DNS / connection reset / timeout, etc.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="User service unavailable. Please try again later.",
+        )
+
+    if resp.status_code == 404:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User {user_id} not found.",
+        )
+
+    if resp.status_code >= 500:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="User service error. Please try again later.",
+        )
+
+    if resp.status_code != 200:
+        # Any unexpected response
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to verify user at this time.",
+        )
+
+# ---------- NEW: circuit breaker wrapper ----------
+def ensure_user_exists(user_id: int) -> None:
+    """
+    Wrap the user check in a circuit breaker.
+    If the circuit is OPEN, we return a fast fallback 503 without calling users_service.
+    """
+    try:
+        user_service_breaker.call(_check_user_exists_via_http, user_id)
+    except pybreaker.CircuitBreakerError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="User service circuit is open. Please try again later.",
+        )
+
+# ----------------- CRUD Endpoints -----------------
+
+@app.post("/workouts", response_model=WorkoutOutput, status_code=status.HTTP_201_CREATED)
+def create_workout(payload: WorkoutInput, db: Session = Depends(get_db)):
+    # NEW:
+    # Synchronous validation: confirm user exists before creating workout
+    ensure_user_exists(payload.user_id)
+
     workout = WorkoutDB(
         user_id=payload.user_id,
         workout_type=payload.workout_type,
@@ -65,156 +122,48 @@ def create_workout(
     return workout
 
 
-@app.get(
-    "/workouts",
-    response_model=List[WorkoutOutput],
-    tags=["workouts"],
-)
-def list_workouts(
-    user_id: int | None = None,
-    db: Session = Depends(get_db),
-):
-    query = db.query(WorkoutDB)
-    if user_id is not None:
-        query = query.filter(WorkoutDB.user_id == user_id)
-    return query.all()
+@app.get("/workouts", response_model=List[WorkoutOutput])
+def get_all_workouts(db: Session = Depends(get_db)):
+    return db.query(WorkoutDB).all()
 
 
-@app.get(
-    "/workouts/{workout_id}",
-    response_model=WorkoutOutput,
-    tags=["workouts"],
-)
-def get_workout(
-    workout_id: int,
-    db: Session = Depends(get_db),
-):
-    workout = (
-        db.query(WorkoutDB)
-        .filter(WorkoutDB.workout_id == workout_id)
-        .first()
-    )
+@app.get("/workouts/{workout_id}", response_model=WorkoutOutput)
+def get_workout_by_id(workout_id: int, db: Session = Depends(get_db)):
+    workout = db.query(WorkoutDB).filter(WorkoutDB.id == workout_id).first()
     if not workout:
         raise HTTPException(status_code=404, detail="Workout not found")
     return workout
 
 
-@app.put(
-    "/workouts/{workout_id}",
-    response_model=WorkoutOutput,
-    tags=["workouts"],
-)
-def update_workout(
-    workout_id: int,
-    payload: WorkoutUpdate,
-    db: Session = Depends(get_db),
-):
-    workout = (
-        db.query(WorkoutDB)
-        .filter(WorkoutDB.workout_id == workout_id)
-        .first()
-    )
+@app.put("/workouts/{workout_id}", response_model=WorkoutOutput)
+def update_workout(workout_id: int, payload: WorkoutUpdate, db: Session = Depends(get_db)):
+    workout = db.query(WorkoutDB).filter(WorkoutDB.id == workout_id).first()
     if not workout:
         raise HTTPException(status_code=404, detail="Workout not found")
 
-    update_data = payload.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(workout, key, value)
+    # Update fields if provided
+    if payload.workout_type is not None:
+        workout.workout_type = payload.workout_type
+    if payload.duration_minutes is not None:
+        workout.duration_minutes = payload.duration_minutes
+    if payload.calories is not None:
+        workout.calories = payload.calories
+    if payload.workout_date is not None:
+        workout.workout_date = payload.workout_date
+    if payload.notes is not None:
+        workout.notes = payload.notes
 
     db.commit()
     db.refresh(workout)
     return workout
 
 
-@app.delete(
-    "/workouts/{workout_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    tags=["workouts"],
-)
-def delete_workout(
-    workout_id: int,
-    db: Session = Depends(get_db),
-):
-    workout = (
-        db.query(WorkoutDB)
-        .filter(WorkoutDB.workout_id == workout_id)
-        .first()
-    )
+@app.delete("/workouts/{workout_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_workout(workout_id: int, db: Session = Depends(get_db)):
+    workout = db.query(WorkoutDB).filter(WorkoutDB.id == workout_id).first()
     if not workout:
         raise HTTPException(status_code=404, detail="Workout not found")
 
     db.delete(workout)
     db.commit()
-    return
-
-
-# ---------- NEW: Integration endpoint (workout service calling others) ----------
-
-@app.get("/api/workout-summary/{user_id}", tags=["proxy"])
-def workout_summary(user_id: int, db: Session = Depends(get_db)):
-    """
-    This endpoint lives in the WORKOUT service but:
-      - Calls the USER service:   GET /api/users/{user_id}
-      - Calls the GOALS service:  GET /goals?user_id={user_id}
-      - Uses its own DB to load workouts for that user.
-
-    It follows the same pattern as the user service:
-    env-based base URLs + httpx.Client().
-    """
-
-    # 1) Call USER service to get the user (and fail if it doesn't exist)
-    user_url = f"{USER_SERVICE_BASE_URL}/api/users/{user_id}"
-
-    try:
-        with httpx.Client() as client:
-            user_res = client.get(user_url)
-        user_res.raise_for_status()
-    except httpx.RequestError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Error contacting user service: {exc}",
-        )
-    except httpx.HTTPStatusError as exc:
-        # If user service says 404, propagate that
-        if exc.response.status_code == status.HTTP_404_NOT_FOUND:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found",
-            )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"User service error: {exc.response.text}",
-        )
-
-    user_data = user_res.json()
-
-    # 2) Get workouts locally from this service's own DB
-    workouts = (
-        db.query(WorkoutDB)
-        .filter(WorkoutDB.user_id == user_id)
-        .all()
-    )
-    # convert ORM objects to plain dicts using the Pydantic schema
-    workout_list = [WorkoutOutput.model_validate(w).model_dump() for w in workouts]
-
-    # 3) Call GOALS service for this user (optional but mirrors the pattern)
-    goals_url = f"{GOALS_SERVICE_BASE_URL}/goals"
-    goals_data = []
-
-    try:
-        with httpx.Client() as client:
-            goals_res = client.get(goals_url, params={"user_id": user_id})
-        # it's fine if goals returns empty list; just error on real HTTP failure
-        goals_res.raise_for_status()
-        goals_data = goals_res.json()
-    except httpx.RequestError:
-        # If goals service is down, we still return user + workouts
-        goals_data = []
-    except httpx.HTTPStatusError:
-        goals_data = []
-
-    return {
-        "user": user_data,
-        "workouts": workout_list,
-        "goals": goals_data,
-    }
+    return None
