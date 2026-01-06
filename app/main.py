@@ -36,7 +36,8 @@ app.add_middleware(
 
 # ---------- Cross-service config ----------
 # This must match your deploy docker-compose service name + port for users service.
-USER_SERVICE_BASE_URL = os.getenv("USER_SERVICE_BASE_URL", "http://localhost:8001")
+USER_SERVICE_BASE_URL = os.getenv("USER_SERVICE_BASE_URL", "http://localhost:8000")
+
 USER_SERVICE_TIMEOUT = float(os.getenv("USER_SERVICE_TIMEOUT", "2.0"))
 
 # ---------- Circuit breaker config ----------
