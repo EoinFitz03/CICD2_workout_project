@@ -60,7 +60,8 @@ def _check_user_exists_via_http(user_id: int) -> None:
 
     # IMPORTANT:
     # If your users service route is not /users/{id}, change this path to match it.
-    url = f"{USER_SERVICE_BASE_URL}/api/users/{user_id}"
+    url = f"{USER_SERVICE_BASE_URL}/users/{user_id}"
+
 
 
     try:
