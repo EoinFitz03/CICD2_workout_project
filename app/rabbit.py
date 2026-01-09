@@ -2,6 +2,8 @@ import os
 import json
 import aio_pika
 
+# got it 
+
 RABBIT_URL = os.getenv("RABBIT_URL", "amqp://guest:guest@rabbitmq:5672/")
 EXCHANGE_NAME = os.getenv("EXCHANGE_NAME", "events_topic")
 
