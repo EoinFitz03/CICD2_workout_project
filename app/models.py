@@ -23,8 +23,4 @@ class WorkoutDB(Base):
     workout_date: Mapped[date] = mapped_column(Date, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    def __repr__(self) -> str:
-        return (
-            f"<WorkoutDB(workout_id={self.workout_id}, user_id={self.user_id}, "
-            f"workout_type={self.workout_type!r}, duration_minutes={self.duration_minutes})>"
-        )
+
